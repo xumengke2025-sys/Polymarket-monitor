@@ -111,6 +111,7 @@ async function fetchTopEvents() {
         
         const promises = [
             fetchGammaEvents({ sort: 'volume', limit: 50 }),
+            fetchGammaEvents({ sort: 'volume_24hr', limit: 50 }), // Add 24h volume
             fetchGammaEvents({ sort: 'liquidity', limit: 50 }),
             fetchGammaEvents({ tag_slug: 'middle-east', limit: 20 }), 
             fetchGammaEvents({ tag_slug: 'politics', limit: 20 }),
@@ -129,7 +130,7 @@ async function fetchTopEvents() {
         }
         
         const results = await Promise.all(promises);
-        const [volEvents, liqEvents, meEvents, polEvents, iranEventsRaw, watchlistEventsRaw] = results;
+        const [volEvents, vol24hEvents, liqEvents, meEvents, polEvents, iranEventsRaw, watchlistEventsRaw] = results;
         
         // 过滤掉 watchlist 中 fetch 失败的 null
         const watchlistEvents = (Array.isArray(watchlistEventsRaw) ? watchlistEventsRaw : []).filter(e => e);
@@ -147,11 +148,12 @@ async function fetchTopEvents() {
         
         // 确保所有数组都是安全的
         const safeVolEvents = Array.isArray(volEvents) ? volEvents : [];
+        const safeVol24hEvents = Array.isArray(vol24hEvents) ? vol24hEvents : [];
         const safeLiqEvents = Array.isArray(liqEvents) ? liqEvents : [];
         const safeMeEvents = Array.isArray(meEvents) ? meEvents : [];
         const safePolEvents = Array.isArray(polEvents) ? polEvents : [];
         
-        [...safeVolEvents, ...safeLiqEvents, ...safeMeEvents, ...safePolEvents, ...iranEvents, ...watchlistEvents].forEach(e => eventMap.set(e.id, e));
+        [...safeVolEvents, ...safeVol24hEvents, ...safeLiqEvents, ...safeMeEvents, ...safePolEvents, ...iranEvents, ...watchlistEvents].forEach(e => eventMap.set(e.id, e));
         
         // 转回数组
         let events = Array.from(eventMap.values());
