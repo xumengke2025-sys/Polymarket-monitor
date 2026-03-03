@@ -71,10 +71,15 @@ async function fetchGammaEvents(params = {}) {
     console.log(`[Gamma API] Requesting: ${url}`);
 
     // 尝试不同的代理配置
+    // 自动检测的代理列表
     const proxyList = [
         process.env.HTTP_PROXY, // .env 配置优先
         'http://127.0.0.1:7890', // Clash 默认
-        'http://127.0.0.1:10809', // v2rayN 默认 HTTP
+        'http://127.0.0.1:7897', // Clash 2
+        'http://127.0.0.1:1080', // SSR
+        'http://127.0.0.1:1081', // SSR 2
+        'http://127.0.0.1:10808', // v2rayN SOCKS转HTTP
+        'http://127.0.0.1:10809', // v2rayN HTTP
         null // 直连兜底
     ];
 
