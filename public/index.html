@@ -984,14 +984,17 @@
              }
         }
 
-        function deleteAnomaly(id) {
+        window.deleteAnomaly = function(id) {
+            const strId = String(id);
+            console.log('[Frontend] Deleting anomaly:', strId);
+
             // 1. Remove from localStorage
             let anomalies = JSON.parse(localStorage.getItem('anomalies') || '[]');
-            anomalies = anomalies.filter(a => a.id !== id);
+            anomalies = anomalies.filter(a => String(a.id) !== strId);
             localStorage.setItem('anomalies', JSON.stringify(anomalies));
             
             // 2. Remove from Sidebar
-            const alertEl = document.getElementById(`alert-${id}`);
+            const alertEl = document.getElementById(`alert-${strId}`);
             if (alertEl) {
                 alertEl.style.opacity = '0';
                 alertEl.style.transform = 'translateX(20px)';
@@ -999,11 +1002,16 @@
             }
             
             // 3. Remove from Map
-            const markerIndex = markers.anomaly.findIndex(m => m.anomalyId === id);
+            // Check both anomalyId property and potentially the marker object itself if structure differs
+            const markerIndex = markers.anomaly.findIndex(m => String(m.anomalyId) === strId);
             if (markerIndex !== -1) {
                 const marker = markers.anomaly[markerIndex];
-                map.removeLayer(marker);
+                if (map && map.hasLayer(marker)) {
+                    map.removeLayer(marker);
+                }
                 markers.anomaly.splice(markerIndex, 1);
+            } else {
+                console.warn('[Frontend] Marker not found for deletion:', strId);
             }
         }
 
