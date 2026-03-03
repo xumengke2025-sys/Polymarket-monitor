@@ -76,7 +76,21 @@ app.post('/api/config', (req, res) => {
     res.json({ success: true, message: "配置已更新" });
 });
 
-// 获取 Gamma API 数据 (支持按不同维度排序或标签过滤)
+// 全局代理状态
+let currentProxy = process.env.HTTP_PROXY || null;
+const PROXY_LIST = [
+    process.env.HTTP_PROXY,
+    'http://127.0.0.1:7890',
+    'http://127.0.0.1:7897',
+    'http://127.0.0.1:1080',
+    'http://127.0.0.1:1081',
+    'http://127.0.0.1:10808',
+    'http://127.0.0.1:10809',
+    'http://127.0.0.1:58309', // 用户提到的端口
+    null
+];
+
+// 获取 Gamma API 数据
 async function fetchGammaEvents(params = {}) {
     const query = new URLSearchParams({
         closed: 'false',
@@ -85,63 +99,62 @@ async function fetchGammaEvents(params = {}) {
     });
     
     const url = `https://gamma-api.polymarket.com/events?${query.toString()}`;
-    console.log(`[Gamma API] Requesting: ${url}`);
+    // 简化日志，避免刷屏
+    // console.log(`[Gamma API] Requesting: ${url}`);
 
-    // 尝试不同的代理配置
-    // 自动检测的代理列表
-    const proxyList = [
-        process.env.HTTP_PROXY, // .env 配置优先
-        'http://127.0.0.1:7890', // Clash 默认
-        'http://127.0.0.1:7897', // Clash 2
-        'http://127.0.0.1:1080', // SSR
-        'http://127.0.0.1:1081', // SSR 2
-        'http://127.0.0.1:10808', // v2rayN SOCKS转HTTP
-        'http://127.0.0.1:10809', // v2rayN HTTP
-        null // 直连兜底
-    ];
+    // 构建待尝试的代理列表：优先使用当前成功的代理
+    let proxiesToTry = [...PROXY_LIST];
+    if (currentProxy) {
+        // 将当前代理移到最前
+        proxiesToTry = [currentProxy, ...PROXY_LIST.filter(p => p !== currentProxy)];
+    }
+    // 去重
+    proxiesToTry = [...new Set(proxiesToTry)];
 
-    let lastError = null;
-
-    for (const proxyUrl of proxyList) {
+    for (const proxyUrl of proxiesToTry) {
         if (proxyUrl === undefined) continue;
         
         try {
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 10000); // 10s 超时
+            const timeout = setTimeout(() => controller.abort(), 8000); // 8s 超时
             
             const options = {
-                timeout: 10000,
+                timeout: 8000,
                 headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
                 signal: controller.signal
             };
 
             if (proxyUrl) {
-                console.log(`[Gamma API] Trying proxy: ${proxyUrl}`);
                 options.agent = new HttpsProxyAgent(proxyUrl);
-            } else {
-                console.log(`[Gamma API] Trying direct connection...`);
             }
 
             const response = await fetch(url, options);
             clearTimeout(timeout);
 
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                throw new Error(`HTTP ${response.status}`);
             }
 
             const data = await response.json();
-            console.log(`[Gamma API] Success with ${proxyUrl || 'direct connection'}`);
+            
+            // 如果成功且使用了代理，更新全局代理
+            if (proxyUrl && proxyUrl !== currentProxy) {
+                console.log(`[Proxy] Switched to working proxy: ${proxyUrl}`);
+                currentProxy = proxyUrl;
+            }
+            
             return data;
 
         } catch (error) {
-            console.log(`[Gamma API] Failed with ${proxyUrl || 'direct connection'}: ${error.message}`);
-            lastError = error;
-            // 继续尝试下一个代理
+            // 只有当是当前代理失败时才打印详细错误，否则静默尝试下一个
+            if (proxyUrl === currentProxy) {
+                console.warn(`[Gamma API] Current proxy ${proxyUrl} failed, trying others...`);
+                currentProxy = null; // 重置
+            }
         }
     }
     
-    // 所有尝试都失败
-    console.error(`[Gamma API] All connection methods failed for ${url}`);
+    console.error(`[Gamma API] All proxies failed for ${url}`);
     return [];
 }
 
@@ -149,13 +162,25 @@ async function fetchGammaEvents(params = {}) {
 async function fetchEventById(id) {
     try {
         const url = `https://gamma-api.polymarket.com/events/${id}`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        
         const options = {
             timeout: 5000,
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
+            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+            signal: controller.signal
         };
-        if (agent) options.agent = agent;
+        
+        // 优先使用当前成功的代理
+        if (currentProxy) {
+            options.agent = new HttpsProxyAgent(currentProxy);
+        } else if (agent) {
+             options.agent = agent;
+        }
         
         const response = await fetch(url, options);
+        clearTimeout(timeout);
+        
         if (!response.ok) return null;
         return await response.json();
     } catch (error) {
@@ -167,7 +192,7 @@ async function fetchEventById(id) {
 // 辅助函数：获取热门事件列表
 async function fetchTopEvents() {
     try {
-        console.log(`Fetching events (Hybrid Strategy: Vol + Liq + Middle East + Watchlist)...`);
+        console.log(`[Monitor] Fetching events... (Proxy: ${currentProxy || 'Auto'})`);
         
         // 混合策略：
         // 1. Top 50 Volume (总热度)
@@ -178,26 +203,30 @@ async function fetchTopEvents() {
         // 6. Watchlist items (自选池)
         
         const promises = [
-        fetchGammaEvents({ order: 'volume', ascending: 'false', limit: 50 }),
-        fetchGammaEvents({ order: 'volume24hr', ascending: 'false', limit: 50 }), // Add 24h volume (FIX: use volume24hr)
-        fetchGammaEvents({ order: 'liquidity', ascending: 'false', limit: 50 }),
-        fetchGammaEvents({ tag_slug: 'middle-east', limit: 20 }), 
-        fetchGammaEvents({ tag_slug: 'politics', limit: 20 }),
-        fetchGammaEvents({ q: 'Iran', limit: 20 })
-    ];
+            fetchGammaEvents({ order: 'volume', ascending: 'false', limit: 50 }),
+            fetchGammaEvents({ order: 'volume24hr', ascending: 'false', limit: 50 }), 
+            fetchGammaEvents({ order: 'liquidity', ascending: 'false', limit: 50 }),
+            fetchGammaEvents({ tag_slug: 'middle-east', limit: 20 }), 
+            fetchGammaEvents({ tag_slug: 'politics', limit: 20 }),
+            fetchGammaEvents({ q: 'Iran', limit: 20 })
+        ];
 
         // 如果有自选，单独拉取
         if (watchlist.size > 0) {
             const watchlistIds = Array.from(watchlist);
-            // Gamma API 不支持批量 ID，只能并发请求
-            // 限制并发数量，避免触发限流
             const watchlistPromises = watchlistIds.map(id => fetchEventById(id));
             promises.push(Promise.all(watchlistPromises));
         } else {
             promises.push(Promise.resolve([]));
         }
         
-        const results = await Promise.all(promises);
+        // 总超时控制：30秒
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Fetch timeout')), 30000)
+        );
+
+        const results = await Promise.race([Promise.all(promises), timeoutPromise]);
+        
         const [volEvents, vol24hEvents, liqEvents, meEvents, polEvents, iranEventsRaw, watchlistEventsRaw] = results;
         
         // 过滤掉 watchlist 中 fetch 失败的 null
@@ -263,6 +292,9 @@ function stopMonitoring() {
     if (monitoringInterval) clearInterval(monitoringInterval);
 }
 
+// 全局缓存，用于新连接快速响应
+let cachedEventsData = [];
+
 async function monitorTask() {
     const events = await fetchTopEvents();
     if (!events || events.length === 0) return;
@@ -270,254 +302,240 @@ async function monitorTask() {
     const allEventsData = [];
 
     for (const event of events) {
-        const markets = event.markets || [];
-        if (markets.length === 0) continue;
+        try {
+            const markets = event.markets || [];
+            if (markets.length === 0) continue;
 
-        // 仅取第一个主要市场作为代表展示 (简化数据传输)
-        // 实际监控会检查所有 markets
-        const displayMarkets = [];
-        
-        // 增加翻译和分类
-        event.title_cn = translateText(event.title);
-        
-        // 智能分类 (覆盖默认分类)
-        const text = (event.title + " " + (event.description || "")).toLowerCase();
-        
-        // 1. 地缘政治 (Geopolitics) - 优先级最高
-        if (text.includes('iran') || text.includes('israel') || text.includes('gaza') || text.includes('war') || text.includes('middle east') || text.includes('ukraine') || text.includes('russia') || text.includes('china') || text.includes('taiwan')) {
-            event.category_cn = "地缘政治"; 
-        } 
-        // 2. 加密货币细分
-        else if (text.includes('bitcoin') || text.includes('btc')) {
-            event.category_cn = "比特币"; // Bitcoin
-        } else if (text.includes('ethereum') || text.includes('eth')) {
-            event.category_cn = "以太坊"; // Ethereum
-        } else if (text.includes('crypto') || text.includes('solana') || text.includes('doge') || text.includes('token') || text.includes('nft')) {
-            event.category_cn = "加密货币"; // Other Crypto
-        } 
-        // 3. 政治细分
-        else if (text.includes('trump') || text.includes('biden') || text.includes('harris') || text.includes('republican') || text.includes('democrat') || text.includes('us election') || text.includes('senate') || text.includes('house')) {
-            event.category_cn = "美国政治"; // US Politics
-        } else if (text.includes('election') || text.includes('president') || text.includes('minister') || text.includes('uk ') || text.includes('france') || text.includes('germany')) {
-            event.category_cn = "国际政治"; // Global Politics
-        } 
-        // 4. 体育细分
-        else if (text.includes('nfl') || text.includes('super bowl') || text.includes('football')) {
-            event.category_cn = "橄榄球"; // American Football
-        } else if (text.includes('nba') || text.includes('basketball')) {
-            event.category_cn = "篮球"; // Basketball
-        } else if (text.includes('soccer') || text.includes('premier league') || text.includes('champions league') || text.includes('fifa')) {
-            event.category_cn = "足球"; // Soccer
-        } else if (text.includes('sport') || text.includes('tennis') || text.includes('f1') || text.includes('ufc')) {
-            event.category_cn = "体育"; // Other Sports
-        }
-        // 5. 经济/科技/娱乐
-        else if (text.includes('fed') || text.includes('rate') || text.includes('inflation') || text.includes('recession') || text.includes('stock') || text.includes('s&p') || text.includes('nasdaq')) {
-            event.category_cn = "金融经济"; // Economics
-        } else if (text.includes('spacex') || text.includes('musk') || text.includes('ai ') || text.includes('artificial intelligence') || text.includes('apple') || text.includes('nvidia') || text.includes('tech')) {
-            event.category_cn = "科技"; // Tech
-        } else if (text.includes('taylor swift') || text.includes('oscar') || text.includes('grammy') || text.includes('movie') || text.includes('music') || text.includes('entertainment')) {
-            event.category_cn = "娱乐"; // Entertainment
-        } 
-        else {
-            event.category_cn = categorizeEvent(event);
-        }
-        
-        // 传递结束时间
-        event.endDate = event.endDate || markets[0].endDate;
-        
-        // 确保 volume 和 liquidity 存在
-        event.liquidity = event.liquidity || 0; 
+            // 仅取第一个主要市场作为代表展示 (简化数据传输)
+            // 实际监控会检查所有 markets
+            const displayMarkets = [];
+            
+            // 增加翻译和分类
+            event.title_cn = translateText(event.title);
+            
+            // 智能分类 (覆盖默认分类)
+            const text = (event.title + " " + (event.description || "")).toLowerCase();
+            
+            // 1. 地缘政治 (Geopolitics) - 优先级最高
+            if (text.includes('iran') || text.includes('israel') || text.includes('gaza') || text.includes('war') || text.includes('middle east') || text.includes('ukraine') || text.includes('russia') || text.includes('china') || text.includes('taiwan')) {
+                event.category_cn = "地缘政治"; 
+            } 
+            // 2. 加密货币细分
+            else if (text.includes('bitcoin') || text.includes('btc')) {
+                event.category_cn = "比特币"; // Bitcoin
+            } else if (text.includes('ethereum') || text.includes('eth')) {
+                event.category_cn = "以太坊"; // Ethereum
+            } else if (text.includes('crypto') || text.includes('solana') || text.includes('doge') || text.includes('token') || text.includes('nft')) {
+                event.category_cn = "加密货币"; // Other Crypto
+            } 
+            // 3. 政治细分
+            else if (text.includes('trump') || text.includes('biden') || text.includes('harris') || text.includes('republican') || text.includes('democrat') || text.includes('us election') || text.includes('senate') || text.includes('house')) {
+                event.category_cn = "美国政治"; // US Politics
+            } else if (text.includes('election') || text.includes('president') || text.includes('minister') || text.includes('uk ') || text.includes('france') || text.includes('germany')) {
+                event.category_cn = "国际政治"; // Global Politics
+            } 
+            // 4. 体育细分
+            else if (text.includes('nfl') || text.includes('super bowl') || text.includes('football')) {
+                event.category_cn = "橄榄球"; // American Football
+            } else if (text.includes('nba') || text.includes('basketball')) {
+                event.category_cn = "篮球"; // Basketball
+            } else if (text.includes('soccer') || text.includes('premier league') || text.includes('champions league') || text.includes('fifa')) {
+                event.category_cn = "足球"; // Soccer
+            } else if (text.includes('sport') || text.includes('tennis') || text.includes('f1') || text.includes('ufc')) {
+                event.category_cn = "体育"; // Other Sports
+            }
+            // 5. 经济/科技/娱乐
+            else if (text.includes('fed') || text.includes('rate') || text.includes('inflation') || text.includes('recession') || text.includes('stock') || text.includes('s&p') || text.includes('nasdaq')) {
+                event.category_cn = "金融经济"; // Economics
+            } else if (text.includes('spacex') || text.includes('musk') || text.includes('ai ') || text.includes('artificial intelligence') || text.includes('apple') || text.includes('nvidia') || text.includes('tech')) {
+                event.category_cn = "科技"; // Tech
+            } else if (text.includes('taylor swift') || text.includes('oscar') || text.includes('grammy') || text.includes('movie') || text.includes('music') || text.includes('entertainment')) {
+                event.category_cn = "娱乐"; // Entertainment
+            } 
+            else {
+                event.category_cn = categorizeEvent(event);
+            }
+            
+            // 传递结束时间
+            event.endDate = event.endDate || markets[0].endDate;
+            
+            // 确保 volume 和 liquidity 存在
+            event.liquidity = event.liquidity || 0; 
 
-        // --- 智能构建展示选项 (核心逻辑修改) ---
-        let displayCandidates = [];
-        const firstMarketOutcomes = JSON.parse(markets[0].outcomes || "[]");
-        
-        // 判断是否为 Group Market (多个 Binary Markets)
-        // 只要 markets 数量 > 1，或者 outcomes 包含 "Yes" 和 "No" 且 markets 数量 > 1
-        // 实际上，如果 markets > 1，通常就是 Group Market
-        const isBinaryGroup = markets.length > 1;
+            // --- 智能构建展示选项 (核心逻辑修改) ---
+            let displayCandidates = [];
+            const safeParse = (str) => {
+                try { return JSON.parse(str || "[]"); } catch (e) { return []; }
+            };
+            
+            const firstMarketOutcomes = safeParse(markets[0].outcomes);
+            
+            // 判断是否为 Group Market (多个 Binary Markets)
+            const isBinaryGroup = markets.length > 1;
 
-        if (isBinaryGroup) {
-            // 处理 Group Market：每个 Market 作为一个选项
-            displayCandidates = markets.map(m => {
-                const mOutcomes = JSON.parse(m.outcomes || "[]");
-                // outcomePrices 可能不存在，需要处理
-                let mPrices = [];
-                try {
-                    mPrices = JSON.parse(m.outcomePrices || "[]");
-                } catch (e) {
-                    mPrices = [];
-                }
-                
-                // 尝试找到 "Yes" 的索引 (忽略大小写)
-                const yesIndex = mOutcomes.findIndex(o => o.toLowerCase() === "yes");
-                
-                // 如果是 Binary (包含 Yes)，取 Yes 的价格
-                // 如果不是 Binary，取最高价格的 Outcome? 
-                // 暂时假设 Group Market 主要是 Binary 或 Pseudo-Binary
-                let price = 0;
-                let isBinary = false;
+            if (isBinaryGroup) {
+                // 处理 Group Market：每个 Market 作为一个选项
+                displayCandidates = markets.map(m => {
+                    const mOutcomes = safeParse(m.outcomes);
+                    const mPrices = safeParse(m.outcomePrices);
+                    
+                    // 尝试找到 "Yes" 的索引 (忽略大小写)
+                    const yesIndex = mOutcomes.findIndex(o => o && o.toLowerCase() === "yes");
+                    
+                    let price = 0;
+                    let isBinary = false;
 
-                if (yesIndex !== -1) {
-                    const rawPrice = mPrices[yesIndex];
-                    price = (rawPrice !== undefined && rawPrice !== null) ? parseFloat(rawPrice) : 0;
-                    isBinary = true;
-                } else {
-                    // 如果没有 Yes，取第一个价格 (兜底)
-                    // 或者取最大值?
-                    price = parseFloat(mPrices[0] || 0);
-                }
-                
-                // 提取选项名：优先用 groupItemTitle，没有则用 question
-                let name = m.groupItemTitle;
-                
-                // 如果 groupItemTitle 为空，尝试从 question 提取
-                if (!name || name.trim() === "") {
-                    // 如果 question 包含 title，尝试去除 title 部分以获得更短的选项名
-                    if (m.question && event.title && m.question.includes(event.title)) {
-                        name = m.question.replace(event.title, '').replace(/^[:：\-\–\—\s]+/, '').trim();
+                    if (yesIndex !== -1) {
+                        const rawPrice = mPrices[yesIndex];
+                        price = (rawPrice !== undefined && rawPrice !== null) ? parseFloat(rawPrice) : 0;
+                        isBinary = true;
+                    } else {
+                        price = parseFloat(mPrices[0] || 0);
                     }
-                    if (!name) name = m.question;
-                }
-                
-                // 如果还是空的，给个默认值
-                if (!name || name.trim() === "") {
-                    name = `Option ${m.id}`; // 最后的兜底
-                }
-
-                return {
-                    name: name,
-                    price: price,
-                    percent: (price * 100).toFixed(1),
-                    isBinary: isBinary,
-                    marketId: m.id,
-                    outcome: isBinary ? "Yes" : (mOutcomes[0] || "Yes")
-                };
-            });
-            
-            // 按价格降序排序，让概率高的排前面
-            displayCandidates.sort((a, b) => b.price - a.price);
-            
-        } else {
-            // 处理 Single Market (可能是 Binary 也可能是多选项)
-            const market = markets[0];
-            const mPrices = JSON.parse(market.outcomePrices || "[]");
-            
-            displayCandidates = firstMarketOutcomes.map((name, index) => ({
-                name: name,
-                price: parseFloat(mPrices[index] || 0),
-                percent: (parseFloat(mPrices[index] || 0) * 100).toFixed(1),
-                isBinary: firstMarketOutcomes.includes("Yes"),
-                marketId: market.id,
-                outcome: name
-            }));
-            
-            // 如果是多选项（非 Yes/No），也按价格排序
-            if (!firstMarketOutcomes.includes("Yes")) {
-                displayCandidates.sort((a, b) => b.price - a.price);
-            }
-        }
-        
-        // 仅保留前 4 个选项用于展示
-        event.displayCandidates = displayCandidates.slice(0, 4);
-
-        for (const market of markets) {
-            const marketId = market.id;
-            try {
-                const outcomes = JSON.parse(market.outcomes || "[]");
-                const outcomePrices = JSON.parse(market.outcomePrices || "[]");
-                
-                // 构建前端展示数据 (仅发送主市场或所有市场，视数据量而定，这里发送所有)
-                const marketInfo = {
-                    id: marketId,
-                    question: market.question,
-                    outcomes: outcomes.map((outcome, index) => ({
-                        name: outcome,
-                        price: parseFloat(outcomePrices[index]),
-                        percent: (parseFloat(outcomePrices[index]) * 100).toFixed(1)
-                    }))
-                };
-                displayMarkets.push(marketInfo);
-
-                // --- 价格变动检测逻辑 ---
-                if (!lastPrices[marketId]) {
-                    // 初始化缓存
-                    lastPrices[marketId] = {};
-                    outcomes.forEach((_, index) => {
-                        lastPrices[marketId][index] = parseFloat(outcomePrices[index]);
-                    });
-                } else {
-                    outcomes.forEach((outcome, index) => {
-                        const currentPrice = parseFloat(outcomePrices[index]);
-                        const oldPrice = lastPrices[marketId][index];
-                        
-                        if (!isNaN(currentPrice) && !isNaN(oldPrice)) {
-                            const change = Math.abs(currentPrice - oldPrice);
-                            
-                            // 检查是否超过阈值
-                            if (change >= config.changeThreshold) {
-                                const direction = currentPrice > oldPrice ? "上涨" : "下跌";
-                                const percentChange = (change * 100).toFixed(1);
-                                
-                                // 尝试查找更友好的选项名称
-                                let friendlyOutcome = outcome;
-                                if (event.displayCandidates) {
-                                    // 尝试匹配 marketId 和 outcome
-                                    const candidate = event.displayCandidates.find(c => c.marketId === marketId && c.outcome === outcome);
-                                    if (candidate) {
-                                        friendlyOutcome = candidate.name;
-                                    }
-                                }
-
-                                const alertMsg = {
-                                    id: `${marketId}-${index}-${Date.now()}`, // 唯一ID
-                                    time: new Date().toLocaleTimeString(),
-                                    eventTitle: event.title,
-                                    marketQuestion: market.question,
-                                    outcome: friendlyOutcome,
-                                    originalOutcome: outcome,
-                                    direction: direction,
-                                    oldPrice: oldPrice,
-                                    newPrice: currentPrice,
-                                    percentChange: percentChange,
-                                    volume: event.volume,
-                                    candidates: event.displayCandidates // 附带所有选项的当前概率，用于前端展示
-                                };
-                                
-                                console.log(`[ALERT] ${alertMsg.eventTitle} - ${alertMsg.outcome}: ${direction} ${percentChange}%`);
-                                io.emit('alert', alertMsg);
-                                
-                                // 更新缓存
-                                lastPrices[marketId][index] = currentPrice;
-                            } else {
-                                // 即使变动不大也更新基准，保持实时性
-                                lastPrices[marketId][index] = currentPrice;
-                            }
+                    
+                    // 提取选项名
+                    let name = m.groupItemTitle;
+                    if (!name || name.trim() === "") {
+                        if (m.question && event.title && m.question.includes(event.title)) {
+                            name = m.question.replace(event.title, '').replace(/^[:：\-\–\—\s]+/, '').trim();
                         }
-                    });
+                        if (!name) name = m.question;
+                    }
+                    if (!name || name.trim() === "") {
+                        name = `Option ${m.id}`;
+                    }
+
+                    return {
+                        name: name,
+                        price: price,
+                        percent: (price * 100).toFixed(1),
+                        isBinary: isBinary,
+                        marketId: m.id,
+                        outcome: isBinary ? "Yes" : (mOutcomes[0] || "Yes")
+                    };
+                });
+                
+                displayCandidates.sort((a, b) => b.price - a.price);
+                
+            } else {
+                // 处理 Single Market
+                const market = markets[0];
+                const mPrices = safeParse(market.outcomePrices);
+                
+                displayCandidates = firstMarketOutcomes.map((name, index) => ({
+                    name: name,
+                    price: parseFloat(mPrices[index] || 0),
+                    percent: (parseFloat(mPrices[index] || 0) * 100).toFixed(1),
+                    isBinary: firstMarketOutcomes.includes("Yes"),
+                    marketId: market.id,
+                    outcome: name
+                }));
+                
+                if (!firstMarketOutcomes.includes("Yes")) {
+                    displayCandidates.sort((a, b) => b.price - a.price);
                 }
-            } catch (e) {
-                console.error(`Error processing market ${marketId}: ${e.message}`);
             }
+            
+            event.displayCandidates = displayCandidates.slice(0, 4);
+
+            for (const market of markets) {
+                const marketId = market.id;
+                try {
+                    const outcomes = safeParse(market.outcomes);
+                    const outcomePrices = safeParse(market.outcomePrices);
+                    
+                    const marketInfo = {
+                        id: marketId,
+                        question: market.question,
+                        outcomes: outcomes.map((outcome, index) => ({
+                            name: outcome,
+                            price: parseFloat(outcomePrices[index]),
+                            percent: (parseFloat(outcomePrices[index]) * 100).toFixed(1)
+                        }))
+                    };
+                    displayMarkets.push(marketInfo);
+
+                    // --- 价格变动检测逻辑 ---
+                    if (!lastPrices[marketId]) {
+                        lastPrices[marketId] = {};
+                        outcomes.forEach((_, index) => {
+                            lastPrices[marketId][index] = parseFloat(outcomePrices[index]);
+                        });
+                    } else {
+                        outcomes.forEach((outcome, index) => {
+                            const currentPrice = parseFloat(outcomePrices[index]);
+                            const oldPrice = lastPrices[marketId][index];
+                            
+                            if (!isNaN(currentPrice) && !isNaN(oldPrice)) {
+                                const change = Math.abs(currentPrice - oldPrice);
+                                
+                                if (change >= config.changeThreshold) {
+                                    const direction = currentPrice > oldPrice ? "上涨" : "下跌";
+                                    const percentChange = (change * 100).toFixed(1);
+                                    
+                                    let friendlyOutcome = outcome;
+                                    if (event.displayCandidates) {
+                                        const candidate = event.displayCandidates.find(c => c.marketId === marketId && c.outcome === outcome);
+                                        if (candidate) {
+                                            friendlyOutcome = candidate.name;
+                                        }
+                                    }
+
+                                    const alertMsg = {
+                                        id: `${marketId}-${index}-${Date.now()}`,
+                                        time: new Date().toLocaleTimeString(),
+                                        eventTitle: event.title,
+                                        marketQuestion: market.question,
+                                        outcome: friendlyOutcome,
+                                        originalOutcome: outcome,
+                                        direction: direction,
+                                        oldPrice: oldPrice,
+                                        newPrice: currentPrice,
+                                        percentChange: percentChange,
+                                        volume: event.volume,
+                                        candidates: event.displayCandidates
+                                    };
+                                    
+                                    console.log(`[ALERT] ${alertMsg.eventTitle} - ${alertMsg.outcome}: ${direction} ${percentChange}%`);
+                                    io.emit('alert', alertMsg);
+                                    
+                                    lastPrices[marketId][index] = currentPrice;
+                                } else {
+                                    lastPrices[marketId][index] = currentPrice;
+                                }
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error(`Error processing market ${marketId}: ${e.message}`);
+                }
+            }
+            
+            allEventsData.push({
+                id: event.id,
+                title: event.title,
+                title_cn: event.title_cn,
+                category_cn: event.category_cn,
+                slug: event.slug,
+                description: event.description || "暂无详细描述",
+                volume: parseFloat(event.volume || 0),
+                liquidity: parseFloat(event.liquidity || 0),
+                createdAt: event.createdAt,
+                displayCandidates: event.displayCandidates,
+                markets: displayMarkets
+            });
+
+        } catch (eventError) {
+            console.error(`Error processing event ${event.id}:`, eventError);
+            // Continue to next event
         }
-        
-        allEventsData.push({
-            id: event.id,
-            title: event.title,
-            title_cn: event.title_cn,
-            category_cn: event.category_cn,
-            slug: event.slug,
-            description: event.description || "暂无详细描述", // 添加描述字段
-            volume: parseFloat(event.volume || 0),
-            liquidity: parseFloat(event.liquidity || 0),
-            createdAt: event.createdAt,
-            displayCandidates: event.displayCandidates, // 使用新的展示字段
-            markets: displayMarkets
-        });
     }
     
-    // 推送全量数据到前端 (优化：可以只推送变化的数据，但简单起见先全推)
+    // 更新缓存
+    cachedEventsData = allEventsData;
+
+    // 推送全量数据到前端
+    console.log(`[Socket] Emitting update with ${allEventsData.length} events to frontend`);
     io.emit('update', {
         events: allEventsData,
         lastUpdated: new Date().toLocaleTimeString(),
@@ -528,7 +546,25 @@ async function monitorTask() {
 // Socket 连接处理
 io.on('connection', (socket) => {
     console.log('New client connected');
-    monitorTask(); // 发送当前状态
+    
+    // 如果有缓存数据，立即发送
+    if (cachedEventsData.length > 0) {
+        console.log(`[Socket] Sending cached data (${cachedEventsData.length} events) to new client`);
+        socket.emit('update', {
+            events: cachedEventsData,
+            lastUpdated: new Date().toLocaleTimeString(),
+            monitoredCount: cachedEventsData.length
+        });
+    } else {
+        // 如果没有缓存，可能刚启动，可以触发一次任务（但要注意并发）
+        // 这里选择不强制触发，等待定时任务，或者如果是首次连接可以触发
+        // 简单起见，如果缓存为空，且没有正在进行的监控（虽然 startServer 已经开始了），
+        // 还是依赖定时任务比较稳妥，避免雪崩。
+        // 但为了用户体验，如果缓存为空，说明还在第一次 fetch 中。
+        // 可以发送一个 "loading" 状态？前端目前没有处理。
+        console.log('[Socket] No cached data yet, waiting for next update cycle');
+    }
+
     socket.on('disconnect', () => console.log('Client disconnected'));
 });
 
