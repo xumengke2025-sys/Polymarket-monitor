@@ -8,6 +8,15 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const { translateText, categorizeEvent } = require('./utils/translator');
 require('dotenv').config();
 
+// 防止进程因未捕获异常而退出
+process.on('uncaughtException', (err) => {
+    console.error('[FATAL] Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
@@ -52,29 +61,66 @@ app.post('/api/config', (req, res) => {
 
 // 获取 Gamma API 数据 (支持按不同维度排序或标签过滤)
 async function fetchGammaEvents(params = {}) {
-    try {
-        const query = new URLSearchParams({
-            closed: 'false',
-            limit: params.limit || 20,
-            ...params
-        });
-        
-        const url = `https://gamma-api.polymarket.com/events?${query.toString()}`;
-        console.log(`[Gamma API] Requesting: ${url}`); // DEBUG LOG
+    const query = new URLSearchParams({
+        closed: 'false',
+        limit: params.limit || 20,
+        ...params
+    });
+    
+    const url = `https://gamma-api.polymarket.com/events?${query.toString()}`;
+    console.log(`[Gamma API] Requesting: ${url}`);
 
-        const options = {
-            timeout: 10000,
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
-        };
-        if (agent) options.agent = agent;
+    // 尝试不同的代理配置
+    const proxyList = [
+        process.env.HTTP_PROXY, // .env 配置优先
+        'http://127.0.0.1:7890', // Clash 默认
+        'http://127.0.0.1:10809', // v2rayN 默认 HTTP
+        null // 直连兜底
+    ];
+
+    let lastError = null;
+
+    for (const proxyUrl of proxyList) {
+        if (proxyUrl === undefined) continue;
         
-        const response = await fetch(url, options);
-        if (!response.ok) throw new Error(`API Error: ${response.status}`);
-        return await response.json();
-    } catch (error) {
-        console.error(`Fetch error (params: ${JSON.stringify(params)}):`, error.message);
-        return [];
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000); // 10s 超时
+            
+            const options = {
+                timeout: 10000,
+                headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+                signal: controller.signal
+            };
+
+            if (proxyUrl) {
+                console.log(`[Gamma API] Trying proxy: ${proxyUrl}`);
+                options.agent = new HttpsProxyAgent(proxyUrl);
+            } else {
+                console.log(`[Gamma API] Trying direct connection...`);
+            }
+
+            const response = await fetch(url, options);
+            clearTimeout(timeout);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            console.log(`[Gamma API] Success with ${proxyUrl || 'direct connection'}`);
+            return data;
+
+        } catch (error) {
+            console.log(`[Gamma API] Failed with ${proxyUrl || 'direct connection'}: ${error.message}`);
+            lastError = error;
+            // 继续尝试下一个代理
+        }
     }
+    
+    // 所有尝试都失败
+    console.error(`[Gamma API] All connection methods failed for ${url}`);
+    return [];
 }
 
 // 获取单个事件详情 (用于 Watchlist)
@@ -110,13 +156,13 @@ async function fetchTopEvents() {
         // 6. Watchlist items (自选池)
         
         const promises = [
-            fetchGammaEvents({ sort: 'volume', limit: 50 }),
-            fetchGammaEvents({ sort: 'volume_24hr', limit: 50 }), // Add 24h volume
-            fetchGammaEvents({ sort: 'liquidity', limit: 50 }),
-            fetchGammaEvents({ tag_slug: 'middle-east', limit: 20 }), 
-            fetchGammaEvents({ tag_slug: 'politics', limit: 20 }),
-            fetchGammaEvents({ q: 'Iran', limit: 20 })
-        ];
+        fetchGammaEvents({ order: 'volume', ascending: 'false', limit: 50 }),
+        fetchGammaEvents({ order: 'volume24hr', ascending: 'false', limit: 50 }), // Add 24h volume (FIX: use volume24hr)
+        fetchGammaEvents({ order: 'liquidity', ascending: 'false', limit: 50 }),
+        fetchGammaEvents({ tag_slug: 'middle-east', limit: 20 }), 
+        fetchGammaEvents({ tag_slug: 'politics', limit: 20 }),
+        fetchGammaEvents({ q: 'Iran', limit: 20 })
+    ];
 
         // 如果有自选，单独拉取
         if (watchlist.size > 0) {
@@ -184,9 +230,11 @@ function startMonitoring() {
     console.log(`Starting monitoring for top ${config.monitorLimit} events...`);
     
     // 立即执行一次
-    monitorTask();
+    monitorTask().catch(err => console.error("Initial monitor task failed:", err));
     
-    monitoringInterval = setInterval(monitorTask, config.pollInterval);
+    monitoringInterval = setInterval(() => {
+        monitorTask().catch(err => console.error("Monitor task failed:", err));
+    }, config.pollInterval);
 }
 
 function stopMonitoring() {
@@ -264,8 +312,9 @@ async function monitorTask() {
         const firstMarketOutcomes = JSON.parse(markets[0].outcomes || "[]");
         
         // 判断是否为 Group Market (多个 Binary Markets)
-        // 特征：markets 数量 > 1 且 outcomes 包含 Yes/No
-        const isBinaryGroup = markets.length > 1 && firstMarketOutcomes.includes("Yes") && firstMarketOutcomes.includes("No");
+        // 只要 markets 数量 > 1，或者 outcomes 包含 "Yes" 和 "No" 且 markets 数量 > 1
+        // 实际上，如果 markets > 1，通常就是 Group Market
+        const isBinaryGroup = markets.length > 1;
 
         if (isBinaryGroup) {
             // 处理 Group Market：每个 Market 作为一个选项
@@ -279,10 +328,24 @@ async function monitorTask() {
                     mPrices = [];
                 }
                 
-                // 找到 "Yes" 的索引
-                const yesIndex = mOutcomes.findIndex(o => o === "Yes");
-                const rawPrice = yesIndex !== -1 ? mPrices[yesIndex] : 0;
-                const price = (rawPrice !== undefined && rawPrice !== null) ? parseFloat(rawPrice) : 0;
+                // 尝试找到 "Yes" 的索引 (忽略大小写)
+                const yesIndex = mOutcomes.findIndex(o => o.toLowerCase() === "yes");
+                
+                // 如果是 Binary (包含 Yes)，取 Yes 的价格
+                // 如果不是 Binary，取最高价格的 Outcome? 
+                // 暂时假设 Group Market 主要是 Binary 或 Pseudo-Binary
+                let price = 0;
+                let isBinary = false;
+
+                if (yesIndex !== -1) {
+                    const rawPrice = mPrices[yesIndex];
+                    price = (rawPrice !== undefined && rawPrice !== null) ? parseFloat(rawPrice) : 0;
+                    isBinary = true;
+                } else {
+                    // 如果没有 Yes，取第一个价格 (兜底)
+                    // 或者取最大值?
+                    price = parseFloat(mPrices[0] || 0);
+                }
                 
                 // 提取选项名：优先用 groupItemTitle，没有则用 question
                 let name = m.groupItemTitle;
@@ -291,13 +354,9 @@ async function monitorTask() {
                 if (!name || name.trim() === "") {
                     // 如果 question 包含 title，尝试去除 title 部分以获得更短的选项名
                     if (m.question && event.title && m.question.includes(event.title)) {
-                        // 简单的去除尝试，比如 "Event Title: Option Name" -> "Option Name"
-                        // 或者 "Event Title - Option Name"
-                        // 这里先简单用完整 question，因为格式不统一
-                        name = m.question;
-                    } else {
-                        name = m.question;
+                        name = m.question.replace(event.title, '').replace(/^[:：\-\–\—\s]+/, '').trim();
                     }
+                    if (!name) name = m.question;
                 }
                 
                 // 如果还是空的，给个默认值
@@ -309,7 +368,9 @@ async function monitorTask() {
                     name: name,
                     price: price,
                     percent: (price * 100).toFixed(1),
-                    isBinary: true // 标记源头是 Binary
+                    isBinary: isBinary,
+                    marketId: m.id,
+                    outcome: isBinary ? "Yes" : (mOutcomes[0] || "Yes")
                 };
             });
             
@@ -325,7 +386,9 @@ async function monitorTask() {
                 name: name,
                 price: parseFloat(mPrices[index] || 0),
                 percent: (parseFloat(mPrices[index] || 0) * 100).toFixed(1),
-                isBinary: firstMarketOutcomes.includes("Yes")
+                isBinary: firstMarketOutcomes.includes("Yes"),
+                marketId: market.id,
+                outcome: name
             }));
             
             // 如果是多选项（非 Yes/No），也按价格排序
@@ -375,17 +438,29 @@ async function monitorTask() {
                                 const direction = currentPrice > oldPrice ? "上涨" : "下跌";
                                 const percentChange = (change * 100).toFixed(1);
                                 
+                                // 尝试查找更友好的选项名称
+                                let friendlyOutcome = outcome;
+                                if (event.displayCandidates) {
+                                    // 尝试匹配 marketId 和 outcome
+                                    const candidate = event.displayCandidates.find(c => c.marketId === marketId && c.outcome === outcome);
+                                    if (candidate) {
+                                        friendlyOutcome = candidate.name;
+                                    }
+                                }
+
                                 const alertMsg = {
                                     id: `${marketId}-${index}-${Date.now()}`, // 唯一ID
                                     time: new Date().toLocaleTimeString(),
                                     eventTitle: event.title,
                                     marketQuestion: market.question,
-                                    outcome: outcome,
+                                    outcome: friendlyOutcome,
+                                    originalOutcome: outcome,
                                     direction: direction,
                                     oldPrice: oldPrice,
                                     newPrice: currentPrice,
                                     percentChange: percentChange,
-                                    volume: event.volume
+                                    volume: event.volume,
+                                    candidates: event.displayCandidates // 附带所有选项的当前概率，用于前端展示
                                 };
                                 
                                 console.log(`[ALERT] ${alertMsg.eventTitle} - ${alertMsg.outcome}: ${direction} ${percentChange}%`);
