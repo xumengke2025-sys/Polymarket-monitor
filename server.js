@@ -25,6 +25,23 @@ const PORT = process.env.PORT || 3000;
 const PROXY_URL = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
 const agent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : null;
 
+// 启动服务器
+function startServer(port) {
+    server.listen(port, () => {
+        console.log(`Server running on http://localhost:${port}`);
+        startMonitoring();
+    }).on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.log(`Port ${port} is busy, trying ${port + 1}...`);
+            startServer(Number(port) + 1);
+        } else {
+            console.error('Server error:', err);
+        }
+    });
+}
+
+startServer(PORT);
+
 app.use(cors());
 app.use(express.static('public'));
 app.use(express.json());
@@ -591,8 +608,4 @@ app.delete('/api/watchlist/:id', (req, res) => {
     res.json({ success: true, watchlist: Array.from(watchlist) });
 });
 
-// 启动服务器
-server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    startMonitoring();
-});
+
