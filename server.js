@@ -48,10 +48,14 @@ app.use(express.json());
 
 // 全局配置
 let config = {
-    monitorLimit: 50,       // 监控前50个热门事件
-    pollInterval: 5000,     // 轮询间隔 (ms)
-    changeThreshold: 0.05   // 变动阈值 (5%)
+    monitorLimit: 100,       // 监控前100个热门事件
+    pollInterval: parseInt(process.env.POLL_INTERVAL) || 20000,    // 轮询间隔 (ms)
+    changeThreshold: parseFloat(process.env.CHANGE_THRESHOLD) || 0.1    // 变动阈值 (10%)
 };
+
+console.log("=== POLYMARKET MONITOR v2.1 ===");
+console.log(`Config loaded: Poll=${config.pollInterval}ms, Threshold=${config.changeThreshold}, Limit=${config.monitorLimit}`);
+console.log("=== Sports Filtering Enabled ===");
 
 let lastPrices = {}; // 全局价格缓存 { marketId: { outcomeIndex: price } }
 let monitoringInterval = null;
@@ -203,9 +207,9 @@ async function fetchTopEvents() {
         // 6. Watchlist items (自选池)
         
         const promises = [
-            fetchGammaEvents({ order: 'volume', ascending: 'false', limit: 50 }),
-            fetchGammaEvents({ order: 'volume24hr', ascending: 'false', limit: 50 }), 
-            fetchGammaEvents({ order: 'liquidity', ascending: 'false', limit: 50 }),
+            fetchGammaEvents({ order: 'volume', ascending: 'false', limit: 100 }),
+            fetchGammaEvents({ order: 'volume24hr', ascending: 'false', limit: 100 }), 
+            fetchGammaEvents({ order: 'liquidity', ascending: 'false', limit: 100 }),
             fetchGammaEvents({ tag_slug: 'middle-east', limit: 20 }), 
             fetchGammaEvents({ tag_slug: 'politics', limit: 20 }),
             fetchGammaEvents({ q: 'Iran', limit: 20 })
@@ -296,10 +300,22 @@ function stopMonitoring() {
 let cachedEventsData = [];
 
 async function monitorTask() {
-    const events = await fetchTopEvents();
-    if (!events || events.length === 0) return;
+    try {
+        const events = await fetchTopEvents();
+        
+        // 空数据保护：如果之前有数据，而这次获取为空，可能是网络波动或 API 异常
+        // 防止前端地图清空
+        if ((!events || events.length === 0) && cachedEventsData.length > 0) {
+            console.warn('[Monitor] Received empty event list while cache exists. Skipping update to protect map.');
+            return;
+        }
 
-    const allEventsData = [];
+        if (!events || events.length === 0) {
+            console.warn('[Monitor] No events fetched (and no cache).');
+            return;
+        }
+
+        const allEventsData = [];
 
     for (const event of events) {
         try {
@@ -356,6 +372,13 @@ async function monitorTask() {
                 event.category_cn = categorizeEvent(event);
             }
             
+        // 过滤体育赛事
+        const sportsCategories = ["橄榄球", "篮球", "足球", "体育", "NFL橄榄球", "NBA篮球", "网球"];
+        if (sportsCategories.includes(event.category_cn)) {
+            console.log(`[Monitor] Filtering out sports event: ${event.title} (${event.category_cn})`);
+            continue;
+        }
+
             // 传递结束时间
             event.endDate = event.endDate || markets[0].endDate;
             
@@ -532,15 +555,22 @@ async function monitorTask() {
     }
     
     // 更新缓存
-    cachedEventsData = allEventsData;
-
-    // 推送全量数据到前端
-    console.log(`[Socket] Emitting update with ${allEventsData.length} events to frontend`);
-    io.emit('update', {
-        events: allEventsData,
-        lastUpdated: new Date().toLocaleTimeString(),
-        monitoredCount: events.length
-    });
+    if (allEventsData.length > 0) {
+        cachedEventsData = allEventsData;
+        
+        io.emit('update', {
+            events: allEventsData,
+            lastUpdated: new Date().toLocaleTimeString(),
+            monitoredCount: allEventsData.length
+        });
+        
+        console.log(`[Socket] Emitted update with ${allEventsData.length} events.`);
+    } else {
+        console.warn('[Monitor] Processed 0 valid events.');
+    }
+    } catch (err) {
+        console.error('[Monitor] Task failed:', err);
+    }
 }
 
 // Socket 连接处理

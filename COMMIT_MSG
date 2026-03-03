@@ -1,0 +1,5 @@
+fix(frontend): prevent map flickering by ignoring empty updates
+
+- Modified socket 'update' handler in public/index.html to only update UI when valid events are received
+- This ensures existing map markers persist even if a network request fails or returns empty data
+- Backend logic in server.js was also updated previously to support this

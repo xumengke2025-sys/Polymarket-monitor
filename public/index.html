@@ -791,15 +791,17 @@
         socket.on('update', (data) => {
             console.log('[Frontend] Received update:', data);
             document.getElementById('last-updated').textContent = `最后更新: ${data.lastUpdated}`;
-            document.getElementById('monitor-count').textContent = `监控中: ${data.monitoredCount}`;
             
-            allEvents = data.events;
-            if (!allEvents || allEvents.length === 0) {
-                console.warn('[Frontend] Received empty events list');
+            // 只有当接收到有效数据时才更新 UI，防止闪烁
+            if (data.events && data.events.length > 0) {
+                document.getElementById('monitor-count').textContent = `监控中: ${data.monitoredCount}`;
+                allEvents = data.events;
+                updatePriceHistory(data.events);
+                renderEvents();
+                updateMapMarkers(); // 更新地图上的热门事件
+            } else {
+                console.warn('[Frontend] Received empty events list. Keeping previous data to prevent flickering.');
             }
-            updatePriceHistory(data.events);
-            renderEvents();
-            updateMapMarkers(); // 更新地图上的热门事件
         });
 
         // 监听错误
