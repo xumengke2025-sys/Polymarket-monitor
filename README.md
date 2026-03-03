@@ -1,70 +1,95 @@
-# Polymarket Monitor (Global Risk Control Terminal)
+# Polymarket 全局监控终端 (Polymarket Global Monitor)
 
-A real-time visualization and monitoring dashboard for Polymarket prediction markets. This project aggregates data from Polymarket, categorizes events (Politics, Crypto, Sports, etc.), and visualizes them on an interactive global map with real-time probability tracking and anomaly detection.
+这是一个针对 Polymarket 预测市场的实时可视化监控面板。本项目聚合了来自 Polymarket 的数据，对事件进行分类（政治、加密货币、体育等），并在交互式全球地图上进行可视化展示，提供实时概率追踪和异动检测功能。
 
-## Features
+## 功能特点
 
-- **Real-time Map Visualization**: 
-  - Interactive Leaflet map displaying active markets.
-  - Custom markers based on event categories (Politics, Crypto, Sports, etc.).
-  - Clustering for high-density areas.
-  - **Granular Categorization**: Detailed subcategories (e.g., Bitcoin, Ethereum, US Politics, Global Elections).
+- **实时地图可视化**:
+  - 交互式地图展示活跃市场。
+  - 基于事件类别（政治、加密货币、体育等）的自定义标记。
+  - 高密度区域聚类显示。
+  - **细化分类**: 支持详细的子分类（例如：比特币、以太坊、美国政治、国际选举等）。
 
-- **Advanced Data Analysis**:
-  - **Probability Trends**: Mini charts in popups showing probability fluctuations over time.
-  - **Detailed Popups**: View top outcomes and their current probabilities directly on the map.
-  - **Anomaly Detection**: Special visual alerts (rotating diamond markers) for significant market movements or high-value opportunities.
+- **高级数据分析**:
+  - **概率趋势**: 弹窗中包含迷你折线图，显示概率随时间的波动情况。
+  - **详细弹窗**: 直接在地图上查看热门选项及其当前概率。
+  - **异动检测**: 针对市场重大波动或高价值机会提供特殊的视觉警报（旋转的菱形标记）。
+  - **多选项支持**: 能够正确展示包含多个候选人的复杂事件（如大选预测），列出所有选项的实时胜率。
 
-- **User Interface**:
-  - Dark mode themed UI.
-  - Collapsible category legend.
-  - Group-based filtering (e.g., filtering "Politics" shows US Politics, International Politics, etc.).
-  - Responsive event cards list.
+- **用户界面**:
+  - 深色模式 UI，适合长时间监控。
+  - 可折叠的分类图例。
+  - 基于分组的筛选功能（例如：筛选“政治”会显示美国政治、国际政治等）。
+  - 响应式事件列表卡片。
+  - **持久化警报**: 异动警报支持本地存储，刷新页面不丢失，并提供“不再告警”的手动删除功能。
 
-## Tech Stack
+## 技术栈
 
-- **Frontend**: HTML5, CSS3 (Tailwind CSS), JavaScript (Vanilla).
-- **Mapping**: Leaflet.js, Leaflet.markercluster.
-- **Charts**: Chart.js.
-- **Backend**: Node.js, Express.
-- **Real-time Communication**: Socket.io.
-- **Data Fetching**: Node-fetch (poller).
+- **前端**: HTML5, CSS3 (Tailwind CSS), JavaScript (原生)。
+- **地图**: Leaflet.js, Leaflet.markercluster。
+- **图表**: Chart.js。
+- **后端**: Node.js, Express。
+- **实时通信**: Socket.io。
+- **数据获取**: Node-fetch (轮询)。
 
-## Installation
+## 安装与使用
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/xumengke2025-sys/Polymarket-monitor.git
-   cd Polymarket-monitor
-   ```
+### 方式一：一键启动 (Windows)
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
+1. **下载代码**：下载本项目压缩包并解压，或使用 `git clone`。
+2. **运行脚本**：双击运行项目根目录下的 `start.bat` 文件。
+   - 脚本会自动检查 Node.js 环境。
+   - 自动安装所需的依赖包。
+   - 启动服务器并自动打开浏览器访问监控页面。
 
-3. **Start the server**
-   ```bash
-   node server.js
-   ```
+### 方式二：手动安装
 
-4. **Access the application**
-   Open your browser and navigate to `http://localhost:3000`.
+#### 1. 获取代码
 
-## Project Structure
+```bash
+git clone https://github.com/xumengke2025-sys/Polymarket-monitor.git
+cd Polymarket-monitor
+```
 
-- `public/index.html`: Main frontend entry point containing map logic and UI.
-- `server.js`: Express server handling API proxying and categorization logic.
-- `monitor.js`: Background worker for fetching and processing Polymarket data.
-- `utils/translator.js`: Helper for translating and mapping Polymarket tags to categories.
+#### 2. 安装依赖
 
-## Usage
+确保你已经安装了 [Node.js](https://nodejs.org/)。然后在项目根目录下运行：
 
-- **Map Navigation**: Drag and zoom to explore markets globally.
-- **Filtering**: Use the category tabs at the top or the legend on the bottom left to filter specific market types.
-- **Market Details**: Click on any marker to see detailed probabilities and historical trends.
-- **Alerts**: Watch for pulsing red markers indicating high-activity or anomalous markets.
+```bash
+npm install
+```
 
-## License
+#### 3. 配置环境 (可选)
+
+项目包含一个 `.env` 文件，你可以根据需要修改配置：
+
+- `EVENT_SLUG`: 监控的目标事件 ID。
+- `POLL_INTERVAL`: 数据轮询间隔（默认 5000ms）。
+- `CHANGE_THRESHOLD`: 价格变动报警阈值（默认 0.05 即 5%）。
+- `HTTP_PROXY`: 如果你在国内无法访问 Polymarket API，请配置代理地址（例如 `http://127.0.0.1:7890`）。
+
+#### 4. 启动服务
+
+```bash
+node server.js
+```
+
+#### 5. 访问应用
+
+打开浏览器并访问：
+
+```
+http://localhost:3000
+```
+
+## 使用说明
+
+- **地图导航**: 拖动和缩放地图以浏览全球市场。
+- **筛选**: 使用顶部的分类标签或左下角的图例来筛选特定类型的市场。
+- **查看详情**: 点击任意标记可查看详细概率和历史趋势图表。
+- **异动警报**: 留意地图上脉冲闪烁的红色标记，这表示该市场正在发生剧烈波动。
+- **管理警报**: 侧边栏的警报记录会持久保存，你可以点击卡片右上角的“✕”按钮手动移除不再关注的警报。
+
+## 许可证
 
 MIT
