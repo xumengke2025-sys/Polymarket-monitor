@@ -714,7 +714,7 @@
                         
                         ${candidatesHtml}
                         
-                        <button onclick="deleteAnomaly('${alertData.id}')" class="mt-2 w-full bg-slate-200 hover:bg-slate-300 text-slate-700 py-1 rounded transition-colors text-xs border border-slate-300">不再告警</button>
+                        <button onclick="deleteAnomaly('${alertData.id}')" class="mt-2 w-full bg-slate-200 hover:bg-slate-300 text-slate-700 py-1 rounded transition-colors text-xs border border-slate-300">我已知晓本次告警</button>
                     </div>
                 `)
                 .addTo(map);
@@ -1357,7 +1357,7 @@
                 
                 if (isRestore) alertEl.classList.add('bg-slate-800');
                 
-                const deleteBtn = data.id ? `<button onclick="deleteAnomaly('${data.id}')" class="absolute top-2 right-2 text-slate-500 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10" title="不再告警">✕</button>` : '';
+                const deleteBtn = data.id ? `<button onclick="deleteAnomaly('${data.id}')" class="absolute top-2 right-2 text-slate-500 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity z-10" title="我已知晓">✕</button>` : '';
 
                 // 构建选项列表 HTML (类似于 addAnomalyMarker)
                 let candidatesHtml = '';
